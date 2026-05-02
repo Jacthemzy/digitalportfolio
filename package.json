@@ -1,0 +1,39 @@
+{
+  "name": "temidayo-portfolio",
+  "version": "3.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "^16.2.0",
+    "react": "^19",
+    "react-dom": "^19",
+    "typescript": "^5",
+    "tailwindcss": "^3.4.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.40",
+    "framer-motion": "^11.3.8",
+    "mongoose": "^8.5.1",
+    "react-hook-form": "^7.52.1",
+    "zod": "^3.23.8",
+    "@hookform/resolvers": "^3.9.0",
+    "nodemailer": "^6.9.14",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "clsx": "^2.1.1",
+    "date-fns": "^3.6.0",
+    "uuid": "^10.0.0",
+    "recharts": "^2.12.7",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/nodemailer": "^6.4.15",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/uuid": "^10.0.0"
+  }
+}
