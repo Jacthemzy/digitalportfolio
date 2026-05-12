@@ -1,6 +1,4 @@
-"use client";
 import ScrollReveal from "@/components/ui/ScrollReveal";
-import { motion } from "framer-motion";
 
 const frameworks = [
   { code: "FW-001", title: "The Problem Stack", desc: "Before writing a single line of code or creating one slide, I map the full problem stack — surface symptom → root cause → systemic driver. Most people solve symptoms. I solve causes.", steps: ["Identify surface symptoms", "Map root causes", "Find systemic drivers", "Design from the bottom up"] },
@@ -61,10 +59,10 @@ export default function ProductThinkingPage() {
                   <p className="text-[#7878a0] text-sm leading-relaxed mb-5">{fw.desc}</p>
                   <div className="space-y-2">
                     {fw.steps.map((step, j) => (
-                      <motion.div key={j} initial={{ opacity:0, x:-10 }} whileInView={{ opacity:1, x:0 }} viewport={{ once:true }} transition={{ delay: j * 0.08 }} className="flex items-center gap-3">
+                      <div key={j} className="flex items-center gap-3">
                         <span className="font-mono text-[9px] text-[#e8c547] w-5 flex-shrink-0">{String(j+1).padStart(2,"0")}</span>
                         <span className="text-[#7878a0] text-xs md:text-sm">{step}</span>
-                      </motion.div>
+                      </div>
                     ))}
                   </div>
                 </div>

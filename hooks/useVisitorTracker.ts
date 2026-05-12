@@ -28,6 +28,7 @@ export function useVisitorTracker() {
   const pathname = usePathname();
   const pageStartTime = useRef(Date.now());
   const visitorId = useRef<string>("");
+  const trackedClickRef = useRef(0);
 
   useEffect(() => {
     visitorId.current = getOrCreateVisitorId();
@@ -36,21 +37,29 @@ export function useVisitorTracker() {
   // Track page view on route change
   useEffect(() => {
     if (!visitorId.current) return;
+    if (pathname.startsWith("/admin") || pathname.startsWith("/chat")) return;
     const vid = visitorId.current;
     const startTime = Date.now();
     pageStartTime.current = startTime;
 
-    // Track pageview
-    fetch("/api/track", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        visitorId: vid,
-        event: "pageview",
-        page: pathname,
-        fingerprint: getFingerprint(),
-      }),
-    }).catch(() => {});
+    const trackPageView = () => {
+      fetch("/api/track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          visitorId: vid,
+          event: "pageview",
+          page: pathname,
+          fingerprint: getFingerprint(),
+        }),
+      }).catch(() => {});
+    };
+
+    if ("requestIdleCallback" in window) {
+      (window as any).requestIdleCallback(trackPageView, { timeout: 1500 });
+    } else {
+      globalThis.setTimeout(trackPageView, 250);
+    }
 
     // Track time spent when leaving page
     const handleUnload = () => {
@@ -84,9 +93,11 @@ export function useVisitorTracker() {
   // Track clicks
   useEffect(() => {
     if (!visitorId.current) return;
+    if (pathname.startsWith("/admin") || pathname.startsWith("/chat")) return;
     const vid = visitorId.current;
 
     const handleClick = (e: MouseEvent) => {
+      if (Date.now() - trackedClickRef.current < 1200) return;
       const target = e.target as HTMLElement;
       const element =
         target.closest("a")?.getAttribute("href") ||
@@ -95,6 +106,7 @@ export function useVisitorTracker() {
         target.tagName.toLowerCase();
 
       if (!element || element === "div" || element === "span") return;
+      trackedClickRef.current = Date.now();
 
       fetch("/api/track", {
         method: "POST",

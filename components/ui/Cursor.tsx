@@ -6,6 +6,10 @@ export default function Cursor() {
   const ringRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
     let mouseX = 0, mouseY = 0, ringX = 0, ringY = 0;
     let animId: number;
 

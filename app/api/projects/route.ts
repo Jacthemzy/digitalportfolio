@@ -6,7 +6,7 @@ import { Project } from "@/models/Project";
 export async function GET(req: NextRequest) {
   try {
     await connectDB();
-    const projects = await Project.find().sort({ order: 1, createdAt: -1 });
+    const projects = await Project.find().sort({ order: 1, createdAt: -1 }).lean();
     return NextResponse.json({ projects });
   } catch {
     return NextResponse.json({ projects: [] });

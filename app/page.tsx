@@ -1,5 +1,5 @@
 "use client";
-import { motion, useScroll, useTransform } from "framer-motion";
+import { motion } from "framer-motion";
 import Link from "next/link";
 import ScrollReveal from "@/components/ui/ScrollReveal";
 import { useEffect, useRef, useState } from "react";
@@ -25,21 +25,10 @@ const marqueeItems = ["Product Strategy","Growth Marketing","Software Engineerin
 
 export default function HomePage() {
   const [roleIdx, setRoleIdx] = useState(0);
-  const [visitors, setVisitors] = useState(247);
   const heroRef = useRef<HTMLDivElement>(null);
-  const { scrollY } = useScroll();
-  const y = useTransform(scrollY, [0, 600], [0, -80]);
-  const opacity = useTransform(scrollY, [0, 400], [1, 0]);
 
   useEffect(() => {
     const t = setInterval(() => setRoleIdx((i) => (i + 1) % roles.length), 3000);
-    return () => clearInterval(t);
-  }, []);
-
-  useEffect(() => {
-    const t = setInterval(() => {
-      if (Math.random() > 0.6) setVisitors((v) => v + 1);
-    }, 8000);
     return () => clearInterval(t);
   }, []);
 
@@ -53,7 +42,7 @@ export default function HomePage() {
           <div className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] rounded-full bg-[#4fc3f7]/[0.03] blur-[140px] animate-pulse2 [animation-delay:2s]" />
         </div>
 
-        <motion.div style={{ y, opacity }} className="relative z-10 max-w-screen-xl mx-auto px-8 pt-28 pb-20 w-full">
+        <motion.div className="relative z-10 max-w-screen-xl mx-auto px-8 pt-28 pb-20 w-full">
           <motion.div initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.2 }} className="section-label mb-10">
             Lagos, Nigeria · Available for opportunities
           </motion.div>
@@ -97,11 +86,10 @@ export default function HomePage() {
           </motion.div>
 
           {/* Live visitors */}
-          <motion.div initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ delay:1 }}
-            className="inline-flex items-center gap-2 px-4 py-2 border border-[#1a1a30] font-mono text-[9px] text-[#7878a0]">
+          <div className="inline-flex items-center gap-2 px-4 py-2 border border-[#1a1a30] font-mono text-[9px] text-[#7878a0]">
             <span className="w-1.5 h-1.5 rounded-full bg-[#4fc3f7] animate-blink" />
-            <span>{visitors} people visited this portfolio</span>
-          </motion.div>
+            <span>Trusted by teams across product, marketing, and software delivery</span>
+          </div>
         </motion.div>
 
         <motion.div initial={{ opacity:0 }} animate={{ opacity:1 }} transition={{ delay:1.5 }}

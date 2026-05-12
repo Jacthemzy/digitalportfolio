@@ -139,6 +139,15 @@ body::before {
   .input-base { font-size: 16px; } /* prevent zoom on iOS */
 }
 
+/* Hide scrollbar but keep scroll (nav pills, etc.) */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Smooth tap highlighting */
 * { -webkit-tap-highlight-color: transparent; }
 

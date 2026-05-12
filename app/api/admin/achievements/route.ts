@@ -4,9 +4,9 @@ import { Achievement } from "@/models/index";
 import { isAdminAuthenticated } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
-  // Public endpoint - used by About page too
   await connectDB();
-  const achievements = await Achievement.find({ published: true }).sort({ order: 1, createdAt: -1 });
+  const adminRequest = isAdminAuthenticated(req);
+  const achievements = await Achievement.find(adminRequest ? {} : { published: true }).sort({ order: 1, createdAt: -1 }).lean();
   return NextResponse.json({ achievements });
 }
 

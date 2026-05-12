@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import { connectDB } from "@/lib/mongodb";
 import { Project } from "@/models/Project";
 import { isAdminAuthenticated } from "@/lib/auth";
@@ -6,7 +7,7 @@ import { isAdminAuthenticated } from "@/lib/auth";
 export async function GET(req: NextRequest) {
   if (!isAdminAuthenticated(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   await connectDB();
-  const projects = await Project.find().sort({ order: 1, createdAt: -1 });
+  const projects = await Project.find().sort({ order: 1, createdAt: -1 }).lean();
   return NextResponse.json({ projects });
 }
 
@@ -18,6 +19,7 @@ export async function POST(req: NextRequest) {
     body.slug = body.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
   }
   const project = await Project.create(body);
+  revalidateTag("projects", "max");
   return NextResponse.json({ project }, { status: 201 });
 }
 
@@ -26,6 +28,7 @@ export async function PUT(req: NextRequest) {
   const { id, ...data } = await req.json();
   await connectDB();
   const project = await Project.findByIdAndUpdate(id, data, { new: true });
+  revalidateTag("projects", "max");
   return NextResponse.json({ project });
 }
 
@@ -34,5 +37,6 @@ export async function DELETE(req: NextRequest) {
   const { id } = await req.json();
   await connectDB();
   await Project.findByIdAndDelete(id);
+  revalidateTag("projects", "max");
   return NextResponse.json({ success: true });
 }

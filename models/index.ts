@@ -1,16 +1,55 @@
 import { Schema, model, models } from "mongoose";
 
-// Chat messages
+const ChatSessionSchema = new Schema({
+  sessionId: { type: String, required: true, unique: true, index: true },
+  ip: String,
+  fingerprint: String,
+  visitorId: String,
+  name: String,
+  email: String,
+  messageCount: { type: Number, default: 0 },
+  lastMessage: Date,
+  lastAdminReplyAt: Date,
+  completed: { type: Boolean, default: false },
+  blocked: { type: Boolean, default: false },
+  blockedReason: String,
+  restricted: { type: Boolean, default: false },
+  restrictedReason: String,
+  outstandingUserMessages: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now },
+  expiresAt: { type: Date, default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
+});
+export const ChatSession = models.ChatSession || model("ChatSession", ChatSessionSchema);
+
 const MessageSchema = new Schema({
+  sessionId: { type: String, required: true, index: true },
   name: { type: String, required: true },
   email: { type: String, required: true },
+  sender: { type: String, enum: ["user", "admin", "system"], default: "user", index: true },
   message: { type: String, required: true },
   read: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now },
+  readByAdmin: { type: Boolean, default: false, index: true },
+  readByUser: { type: Boolean, default: false, index: true },
+  replyNotifiedAt: Date,
+  meta: { type: Schema.Types.Mixed, default: {} },
+  deletedByUserAt: Date,
+  deletedByAdminAt: Date,
+  deletedForUser: { type: Boolean, default: false },
+  deleteReason: String,
+  createdAt: { type: Date, default: Date.now, index: true },
 });
 export const Message = models.Message || model("Message", MessageSchema);
 
-// Projects
+const ChatAuditLogSchema = new Schema({
+  action: { type: String, required: true, index: true },
+  actor: { type: String, enum: ["admin", "user", "system"], required: true, index: true },
+  sessionId: { type: String, index: true },
+  messageId: String,
+  details: { type: Schema.Types.Mixed, default: {} },
+  createdAt: { type: Date, default: Date.now, index: true },
+});
+export const ChatAuditLog = models.ChatAuditLog || model("ChatAuditLog", ChatAuditLogSchema);
+
 const ProjectSchema = new Schema({
   num: String,
   title: { type: String, required: true },
@@ -28,7 +67,6 @@ const ProjectSchema = new Schema({
 });
 export const Project = models.Project || model("Project", ProjectSchema);
 
-// Achievements (certificates, awards, press)
 const AchievementSchema = new Schema({
   type: { type: String, enum: ["certificate", "award", "press"], required: true },
   title: { type: String, required: true },
@@ -44,7 +82,6 @@ const AchievementSchema = new Schema({
 });
 export const Achievement = models.Achievement || model("Achievement", AchievementSchema);
 
-// CV Sessions
 const CvSessionSchema = new Schema({
   sessionId: { type: String, unique: true },
   createdAt: { type: Date, default: Date.now },
@@ -52,7 +89,6 @@ const CvSessionSchema = new Schema({
 });
 export const CvSession = models.CvSession || model("CvSession", CvSessionSchema);
 
-// Analytics
 const AnalyticsSchema = new Schema({
   page: String,
   timeSpent: { type: Number, default: 0 },

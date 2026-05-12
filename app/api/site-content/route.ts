@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import { connectDB } from "@/lib/mongodb";
 import { SiteContent } from "@/models/SiteContent";
 import { isAdminAuthenticated } from "@/lib/auth";
@@ -86,8 +87,10 @@ const DEFAULTS: Record<string, any> = {
   },
   settings: {
     siteTitle: "Temidayo Jacob",
+    siteName: "Temidayo Jacob",
     siteTagline: "Software Developer · Product Manager · Digital Marketer",
     availableForHire: true,
+    isAvailable: true,
     location: "Lagos, Nigeria",
     email: "jacobtemidayo068@gmail.com",
     phone: "+2348106565953",
@@ -96,6 +99,7 @@ const DEFAULTS: Record<string, any> = {
     twitter: "",
     notificationEmail: "jacobtemidayo068@gmail.com",
     cvTimerSeconds: 90,
+    availableText: "Available for hire",
   },
 };
 
@@ -104,10 +108,10 @@ export async function GET(req: NextRequest) {
   try {
     await connectDB();
     if (section) {
-      const doc = await SiteContent.findOne({ section });
+      const doc: any = await SiteContent.findOne({ section }).lean();
       return NextResponse.json({ data: doc?.data ?? DEFAULTS[section] ?? {} });
     }
-    const all = await SiteContent.find();
+    const all: any[] = await SiteContent.find().lean();
     const result: Record<string, any> = { ...DEFAULTS };
     all.forEach((d) => { result[d.section] = d.data; });
     return NextResponse.json({ data: result });
@@ -123,6 +127,9 @@ export async function PUT(req: NextRequest) {
   try {
     await connectDB();
     await SiteContent.findOneAndUpdate({ section }, { section, data, updatedAt: new Date() }, { upsert: true, new: true });
+    if (section === "settings") {
+      revalidateTag("site-settings", "max");
+    }
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: "Failed to save" }, { status: 500 });

@@ -5,13 +5,49 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
-type Tab = "overview"|"messages"|"home"|"about"|"skills"|"projects"|"thinking"|"impact"|"achievements"|"cv"|"analytics"|"settings";
+type Tab = "overview"|"messages"|"audit"|"home"|"about"|"skills"|"projects"|"thinking"|"impact"|"achievements"|"cv"|"analytics"|"settings";
+type ContentSectionKey = "home" | "about" | "skills" | "productThinking" | "socialImpact" | "settings";
 
-interface Msg { _id:string; name:string; email:string; message:string; read:boolean; createdAt:string; }
+interface ThreadMessage {
+  _id: string;
+  sender: "user" | "admin" | "system";
+  message: string;
+  createdAt: string;
+  readByAdmin: boolean;
+  readByUser: boolean;
+  deletedByUserAt?: string | null;
+  deletedForUser?: boolean;
+}
+
+interface Msg {
+  _id: string;
+  sessionId: string;
+  name: string;
+  email: string;
+  message: string;
+  read: boolean;
+  unreadCount: number;
+  createdAt: string;
+  blocked: boolean;
+  blockedReason?: string;
+  restricted: boolean;
+  restrictedReason?: string;
+  messages: ThreadMessage[];
+}
+
+interface ChatAudit {
+  _id: string;
+  action: string;
+  actor: "admin" | "user" | "system";
+  sessionId?: string;
+  messageId?: string;
+  createdAt: string;
+}
 
 const NAV_ITEMS: {key:Tab; label:string; icon:string; group:string}[] = [
   {key:"overview",label:"Overview",icon:"◈",group:"dashboard"},
   {key:"messages",label:"Messages",icon:"💬",group:"dashboard"},
+  {key:"audit",label:"Audit Logs",icon:"🧾",group:"dashboard"},
   {key:"analytics",label:"Analytics",icon:"△",group:"dashboard"},
   {key:"home",label:"Home Page",icon:"🏠",group:"pages"},
   {key:"about",label:"About Page",icon:"👤",group:"pages"},
@@ -23,6 +59,15 @@ const NAV_ITEMS: {key:Tab; label:string; icon:string; group:string}[] = [
   {key:"cv",label:"CV Editor",icon:"📄",group:"content"},
   {key:"settings",label:"Settings",icon:"⚙",group:"system"},
 ];
+
+const SECTION_BY_TAB: Partial<Record<Tab, ContentSectionKey>> = {
+  home: "home",
+  about: "about",
+  skills: "skills",
+  thinking: "productThinking",
+  impact: "socialImpact",
+  settings: "settings",
+};
 
 function Field({label,value,onChange,multiline=false,placeholder=""}:{label:string;value:string;onChange:(v:string)=>void;multiline?:boolean;placeholder?:string}) {
   return (
@@ -53,15 +98,27 @@ export default function AdminDashboard() {
   const [tab, setTab] = useState<Tab>("overview");
   const [token, setToken] = useState("");
   const [messages, setMessages] = useState<Msg[]>([]);
+  const [audits, setAudits] = useState<ChatAudit[]>([]);
   const [selectedMsg, setSelectedMsg] = useState<Msg|null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [replying, setReplying] = useState(false);
   const [analytics, setAnalytics] = useState<any>({pages:[],daily:[],total:0});
   const [projectCount, setProjectCount] = useState(0);
   const [achCount, setAchCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [sectionLoading, setSectionLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [siteData, setSiteData] = useState<Record<string,any>>({});
+  const [loadedSections, setLoadedSections] = useState<Record<string, boolean>>({});
+  const [loadedResources, setLoadedResources] = useState<Record<string, boolean>>({});
   const [mobileNav, setMobileNav] = useState(false);
+  const [retentionDays, setRetentionDays] = useState(90);
+  const [retentionLoading, setRetentionLoading] = useState(false);
+  const [auditActorFilter, setAuditActorFilter] = useState<"all" | "admin" | "user" | "system">("all");
+  const [auditActionFilter, setAuditActionFilter] = useState("all");
+  const [auditFromDate, setAuditFromDate] = useState("");
+  const [auditToDate, setAuditToDate] = useState("");
 
   const h = useCallback(()=>({
     "Content-Type":"application/json",
@@ -74,29 +131,58 @@ export default function AdminDashboard() {
     setToken(t);
   },[router]);
 
-  const fetchAll = useCallback(async()=>{
+  const fetchOverview = useCallback(async()=>{
     if(!token) return;
     setLoading(true);
     try {
-      const [msgR,anaR,projR,achR,siteR] = await Promise.all([
+      const [msgR,anaR,projR,achR] = await Promise.all([
         fetch("/api/admin/messages",{headers:h()}),
         fetch("/api/admin/analytics",{headers:h()}),
         fetch("/api/admin/projects",{headers:h()}),
         fetch("/api/admin/achievements",{headers:h()}),
-        fetch("/api/site-content"),
       ]);
       if(msgR.status===401){router.push("/admin");return;}
-      const [md,ad,pd,acd,sd] = await Promise.all([msgR.json(),anaR.json(),projR.json(),achR.json(),siteR.json()]);
-      setMessages(md.messages||[]);
+      const [md,ad,pd,acd] = await Promise.all([msgR.json(),anaR.json(),projR.json(),achR.json()]);
+      const threads = md.threads || md.messages || [];
+      setMessages(threads);
+      setAudits(md.audits || []);
+      setSelectedMsg((current)=> {
+        if (!current) return threads[0] || null;
+        return threads.find((thread: Msg) => thread.sessionId === current.sessionId) || threads[0] || null;
+      });
       setAnalytics(ad);
       setProjectCount((pd.projects||[]).length);
       setAchCount((acd.achievements||[]).length);
-      setSiteData(sd.data||{});
+      setLoadedResources((current) => ({
+        ...current,
+        overview: true,
+        messages: true,
+        analytics: true,
+        projects: true,
+        achievements: true,
+      }));
     } catch{}
     setLoading(false);
   },[token,h,router]);
 
-  useEffect(()=>{fetchAll();},[fetchAll]);
+  const fetchSection = useCallback(async(section: string)=>{
+    if(!section || loadedSections[section]) return;
+    setSectionLoading(true);
+    try {
+      const res = await fetch(`/api/site-content?section=${section}`);
+      const data = await res.json();
+      setSiteData((current)=>({ ...current, [section]: data.data || {} }));
+      setLoadedSections((current)=>({ ...current, [section]: true }));
+    } catch {}
+    setSectionLoading(false);
+  },[loadedSections]);
+
+  useEffect(()=>{fetchOverview();},[fetchOverview]);
+
+  useEffect(()=>{
+    const section = SECTION_BY_TAB[tab];
+    if(section) fetchSection(section);
+  },[tab, fetchSection]);
 
   const saveSection = async(section:string, data:any)=>{
     setSaving(true);
@@ -117,15 +203,110 @@ export default function AdminDashboard() {
   const setField = (section:string, key:string, val:any) => setSiteData(p=>({...p,[section]:{...p[section],[key]:val}}));
 
   const logout = ()=>{localStorage.removeItem("admin_token");router.push("/admin");};
-  const unread = messages.filter(m=>!m.read).length;
+  const unread = messages.reduce((total, thread) => total + (thread.unreadCount || 0), 0);
 
-  const markRead = async(id:string)=>{
-    await fetch("/api/admin/messages",{method:"PATCH",headers:h(),body:JSON.stringify({id})});
-    fetchAll();
+  const markRead = async(sessionId:string)=>{
+    await fetch("/api/admin/messages",{method:"PATCH",headers:h(),body:JSON.stringify({sessionId, action:"mark_read"})});
+    fetchOverview();
   };
-  const deleteMsg = async(id:string)=>{
-    await fetch("/api/admin/messages",{method:"DELETE",headers:h(),body:JSON.stringify({id})});
-    setSelectedMsg(null);fetchAll();
+  const deleteMsg = async(sessionId:string)=>{
+    await fetch("/api/admin/messages",{method:"DELETE",headers:h(),body:JSON.stringify({sessionId})});
+    setSelectedMsg(null);fetchOverview();
+  };
+  const moderateThread = async(action:"block"|"unblock"|"restrict"|"unrestrict", sessionId:string)=>{
+    const reason = action === "block"
+      ? "Blocked by admin."
+      : action === "restrict"
+        ? "Replies are currently restricted."
+        : "";
+    await fetch("/api/admin/messages",{method:"PATCH",headers:h(),body:JSON.stringify({sessionId, action, reason})});
+    fetchOverview();
+  };
+  const sendReply = async()=>{
+    if(!selectedMsg || !replyText.trim() || replying) return;
+    setReplying(true);
+    try {
+      await fetch("/api/admin/messages",{
+        method:"POST",
+        headers:h(),
+        body:JSON.stringify({sessionId:selectedMsg.sessionId, message:replyText}),
+      });
+      setReplyText("");
+      fetchOverview();
+    } catch {}
+    setReplying(false);
+  };
+
+  const exportChats = async () => {
+    const response = await fetch("/api/admin/messages/export", { headers: h() });
+    if (!response.ok) return;
+    const payload = await response.json();
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `chat-export-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const applyRetention = async () => {
+    setRetentionLoading(true);
+    try {
+      await fetch("/api/admin/messages", {
+        method: "PATCH",
+        headers: h(),
+        body: JSON.stringify({ action: "apply_retention", days: retentionDays }),
+      });
+      fetchOverview();
+    } catch {}
+    setRetentionLoading(false);
+  };
+
+  const filteredAudits = audits.filter((audit) => {
+    if (auditActorFilter !== "all" && audit.actor !== auditActorFilter) return false;
+    if (auditActionFilter !== "all" && audit.action !== auditActionFilter) return false;
+    const createdAt = new Date(audit.createdAt).getTime();
+    if (auditFromDate) {
+      const from = new Date(auditFromDate).getTime();
+      if (createdAt < from) return false;
+    }
+    if (auditToDate) {
+      const to = new Date(auditToDate).getTime() + (24 * 60 * 60 * 1000 - 1);
+      if (createdAt > to) return false;
+    }
+    return true;
+  });
+
+  const uniqueAuditActions = Array.from(new Set(audits.map((audit) => audit.action))).sort();
+
+  const exportFilteredAudits = () => {
+    const blob = new Blob([JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      filters: {
+        actor: auditActorFilter,
+        action: auditActionFilter,
+        from: auditFromDate || null,
+        to: auditToDate || null,
+      },
+      count: filteredAudits.length,
+      items: filteredAudits,
+    }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const deleteThreadMessage = async (messageId: string) => {
+    await fetch("/api/admin/messages", {
+      method: "DELETE",
+      headers: h(),
+      body: JSON.stringify({ messageId }),
+    });
+    fetchOverview();
   };
 
   if(loading) return (
@@ -138,7 +319,7 @@ export default function AdminDashboard() {
   );
 
   const groups = [
-    {label:"Dashboard",keys:["overview","messages","analytics"]},
+    {label:"Dashboard",keys:["overview","messages","audit","analytics"]},
     {label:"Edit Pages",keys:["home","about","skills","thinking","impact"]},
     {label:"Content",keys:["projects","achievements","cv"]},
     {label:"System",keys:["settings"]},
@@ -242,8 +423,8 @@ export default function AdminDashboard() {
               <div className="bg-[#0c0c18] border border-[#1a1a30] p-5">
                 <h3 className="font-mono text-[9px] text-[#e8c547] uppercase tracking-widest mb-4">Recent Messages</h3>
                 {messages.slice(0,5).map(m=>(
-                  <div key={m._id} className="flex items-center gap-3 py-2.5 border-b border-[#1a1a30] last:border-0 cursor-pointer hover:bg-[#0c0c18]" onClick={()=>{setSelectedMsg(m);setTab("messages");}}>
-                    {!m.read && <span className="w-1.5 h-1.5 rounded-full bg-[#e8c547] flex-shrink-0"/>}
+                  <div key={m.sessionId} className="flex items-center gap-3 py-2.5 border-b border-[#1a1a30] last:border-0 cursor-pointer hover:bg-[#0c0c18]" onClick={()=>{setSelectedMsg(m);setTab("messages");}}>
+                    {m.unreadCount > 0 && <span className="w-1.5 h-1.5 rounded-full bg-[#e8c547] flex-shrink-0"/>}
                     <div className="flex-1 min-w-0"><p className="text-[#eeeef5] text-sm font-medium">{m.name}</p><p className="text-[#7878a0] text-xs truncate">{m.message}</p></div>
                     <span className="font-mono text-[9px] text-[#3a3a5c] flex-shrink-0">{new Date(m.createdAt).toLocaleDateString()}</span>
                   </div>
@@ -257,22 +438,27 @@ export default function AdminDashboard() {
           {tab==="messages" && (
             <motion.div initial={{opacity:0,y:14}} animate={{opacity:1,y:0}}>
               <h1 className="font-serif text-3xl text-[#eeeef5] mb-1" style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:300}}>Messages</h1>
-              <p className="font-mono text-[9px] text-[#3a3a5c] mb-6 uppercase tracking-widest">{unread} unread · {messages.length} total</p>
+              <p className="font-mono text-[9px] text-[#3a3a5c] mb-6 uppercase tracking-widest">{unread} unread · {messages.length} conversations</p>
               <div className="grid lg:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   {messages.map(m=>(
-                    <div key={m._id} onClick={()=>{setSelectedMsg(m);if(!m.read)markRead(m._id);}}
-                      className={`p-4 border cursor-pointer transition-all ${selectedMsg?._id===m._id?"border-[#e8c547]/30 bg-[#0c0c18]":"border-[#1a1a30] bg-[#07070f] hover:border-[#242440]"}`}>
+                    <div key={m.sessionId} onClick={()=>{setSelectedMsg(m);if(m.unreadCount>0)markRead(m.sessionId);}}
+                      className={`p-4 border cursor-pointer transition-all ${selectedMsg?.sessionId===m.sessionId?"border-[#e8c547]/30 bg-[#0c0c18]":"border-[#1a1a30] bg-[#07070f] hover:border-[#242440]"}`}>
                       <div className="flex items-start gap-3">
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1">
-                            {!m.read && <span className="w-1.5 h-1.5 rounded-full bg-[#25d366] flex-shrink-0"/>}
+                            {m.unreadCount>0 && <span className="w-1.5 h-1.5 rounded-full bg-[#25d366] flex-shrink-0"/>}
                             <span className="text-[#eeeef5] text-sm font-semibold">{m.name}</span>
+                            {m.restricted && <span className="font-mono text-[8px] px-2 py-0.5 border border-yellow-400/20 text-yellow-400">Restricted</span>}
+                            {m.blocked && <span className="font-mono text-[8px] px-2 py-0.5 border border-red-400/20 text-red-400">Blocked</span>}
                           </div>
                           <p className="font-mono text-[9px] text-[#3a3a5c] mb-1">{m.email}</p>
                           <p className="text-[#7878a0] text-xs truncate">{m.message}</p>
                         </div>
-                        <span className="font-mono text-[9px] text-[#3a3a5c] flex-shrink-0">{new Date(m.createdAt).toLocaleDateString()}</span>
+                        <div className="text-right flex-shrink-0">
+                          <span className="font-mono text-[9px] text-[#3a3a5c] block">{new Date(m.createdAt).toLocaleDateString()}</span>
+                          {m.unreadCount>0 && <span className="font-mono text-[9px] text-[#e8c547]">{m.unreadCount} new</span>}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -286,20 +472,136 @@ export default function AdminDashboard() {
                           <h3 className="font-serif text-xl text-[#eeeef5]" style={{fontFamily:"'Cormorant Garamond',serif"}}>{selectedMsg.name}</h3>
                           <a href={`mailto:${selectedMsg.email}`} className="font-mono text-[10px] text-[#e8c547] hover:underline">{selectedMsg.email}</a>
                         </div>
-                        <button onClick={()=>deleteMsg(selectedMsg._id)} className="font-mono text-[9px] text-red-400 border border-red-400/20 px-3 py-1.5 hover:bg-red-400/10 transition-all">Delete</button>
+                        <button onClick={()=>deleteMsg(selectedMsg.sessionId)} className="font-mono text-[9px] text-red-400 border border-red-400/20 px-3 py-1.5 hover:bg-red-400/10 transition-all">Delete</button>
                       </div>
                       <p className="font-mono text-[9px] text-[#3a3a5c] mb-4">{new Date(selectedMsg.createdAt).toLocaleString()}</p>
-                      <div className="bg-[#07070f] border border-[#1a1a30] p-4 mb-4">
-                        <p className="text-[#eeeef5] text-sm leading-relaxed whitespace-pre-wrap">{selectedMsg.message}</p>
+                      <div className="flex flex-wrap gap-2 mb-4">
+                        <button onClick={()=>markRead(selectedMsg.sessionId)} className="font-mono text-[9px] text-[#e8c547] border border-[#e8c547]/20 px-3 py-1.5 hover:bg-[#e8c547]/10 transition-all">Mark Read</button>
+                        <button onClick={()=>moderateThread(selectedMsg.restricted ? "unrestrict" : "restrict", selectedMsg.sessionId)} className="font-mono text-[9px] text-yellow-400 border border-yellow-400/20 px-3 py-1.5 hover:bg-yellow-400/10 transition-all">
+                          {selectedMsg.restricted ? "Unrestrict" : "Restrict"}
+                        </button>
+                        <button onClick={()=>moderateThread(selectedMsg.blocked ? "unblock" : "block", selectedMsg.sessionId)} className="font-mono text-[9px] text-red-400 border border-red-400/20 px-3 py-1.5 hover:bg-red-400/10 transition-all">
+                          {selectedMsg.blocked ? "Unblock" : "Block"}
+                        </button>
                       </div>
-                      <a href={`mailto:${selectedMsg.email}?subject=Re: Your message on my portfolio`}
-                        className="flex items-center justify-center gap-2 w-full py-3 bg-[#e8c547] text-[#04040a] font-bold text-sm hover:bg-[#f5e070] transition-all">
-                        Reply via Email →
-                      </a>
+                      {(selectedMsg.restrictedReason || selectedMsg.blockedReason) && (
+                        <div className="bg-[#07070f] border border-[#1a1a30] p-3 mb-4">
+                          <p className="font-mono text-[9px] text-[#3a3a5c] uppercase tracking-widest mb-1">Moderation status</p>
+                          <p className="text-[#7878a0] text-xs">{selectedMsg.blockedReason || selectedMsg.restrictedReason}</p>
+                        </div>
+                      )}
+                      <div className="space-y-3 mb-4 max-h-[360px] overflow-y-auto pr-1">
+                        {selectedMsg.messages.map((threadMsg)=>(
+                          <div key={threadMsg._id} className={`p-4 border ${threadMsg.sender==="admin"?"bg-[#0b1516] border-[#1f3931]":"bg-[#07070f] border-[#1a1a30]"}`}>
+                            <div className="flex items-center justify-between gap-3 mb-2">
+                              <span className={`font-mono text-[9px] uppercase tracking-widest ${threadMsg.sender==="admin"?"text-[#25d366]":"text-[#e8c547]"}`}>{threadMsg.sender==="admin"?"Admin reply":"Visitor message"}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[9px] text-[#3a3a5c]">{new Date(threadMsg.createdAt).toLocaleString()}</span>
+                                <button
+                                  onClick={() => deleteThreadMessage(threadMsg._id)}
+                                  className="font-mono text-[8px] text-red-400 border border-red-400/20 px-2 py-1 hover:bg-red-400/10 transition-all"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                            <p className="text-[#eeeef5] text-sm leading-relaxed whitespace-pre-wrap">{threadMsg.message}</p>
+                            {threadMsg.deletedByUserAt && (
+                              <p className="mt-2 font-mono text-[9px] text-yellow-400">
+                                User deleted this message from their view.
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="bg-[#07070f] border border-[#1a1a30] p-3 mb-4">
+                        <p className="font-mono text-[9px] text-[#3a3a5c] uppercase tracking-widest mb-2">Recent Audit Activity</p>
+                        <div className="space-y-2 max-h-32 overflow-y-auto">
+                          {audits.slice(0, 8).map((audit) => (
+                            <div key={audit._id} className="text-xs text-[#7878a0]">
+                              <span className="text-[#eeeef5]">{audit.action}</span> · {audit.actor} · {new Date(audit.createdAt).toLocaleString()}
+                            </div>
+                          ))}
+                          {audits.length === 0 && <p className="text-xs text-[#3a3a5c]">No audit logs yet.</p>}
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <textarea value={replyText} onChange={(e)=>setReplyText(e.target.value)} rows={4} placeholder="Reply to this person here. They will see it in chat and get an email notification." className="input-base text-sm resize-none" />
+                        <button onClick={sendReply} disabled={replying || !replyText.trim()} className="flex items-center justify-center gap-2 w-full py-3 bg-[#e8c547] text-[#04040a] font-bold text-sm hover:bg-[#f5e070] disabled:opacity-60 transition-all">
+                          {replying ? "Sending..." : "Send Reply →"}
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <div className="text-center py-16"><p className="font-mono text-[10px] text-[#3a3a5c] uppercase tracking-widest">Select a message to view</p></div>
                   )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* ── AUDIT LOGS ── */}
+          {tab==="audit" && (
+            <motion.div initial={{opacity:0,y:14}} animate={{opacity:1,y:0}}>
+              <h1 className="font-serif text-3xl text-[#eeeef5] mb-1" style={{fontFamily:"'Cormorant Garamond',serif",fontWeight:300}}>Audit Logs</h1>
+              <p className="font-mono text-[9px] text-[#3a3a5c] mb-6 uppercase tracking-widest">{filteredAudits.length} entries shown · {audits.length} total</p>
+
+              <div className="bg-[#0c0c18] border border-[#1a1a30] p-5 mb-4">
+                <h3 className="font-mono text-[9px] text-[#e8c547] uppercase tracking-widest mb-4">Filters</h3>
+                <div className="grid md:grid-cols-4 gap-3">
+                  <div>
+                    <label className="font-mono text-[8px] text-[#3a3a5c] uppercase tracking-widest block mb-1.5">Actor</label>
+                    <select value={auditActorFilter} onChange={(event)=>setAuditActorFilter(event.target.value as "all" | "admin" | "user" | "system")} className="input-base text-sm">
+                      <option value="all">All actors</option>
+                      <option value="admin">Admin</option>
+                      <option value="user">User</option>
+                      <option value="system">System</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-mono text-[8px] text-[#3a3a5c] uppercase tracking-widest block mb-1.5">Action</label>
+                    <select value={auditActionFilter} onChange={(event)=>setAuditActionFilter(event.target.value)} className="input-base text-sm">
+                      <option value="all">All actions</option>
+                      {uniqueAuditActions.map((action) => (
+                        <option key={action} value={action}>{action}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-mono text-[8px] text-[#3a3a5c] uppercase tracking-widest block mb-1.5">From date</label>
+                    <input type="date" value={auditFromDate} onChange={(event)=>setAuditFromDate(event.target.value)} className="input-base text-sm" />
+                  </div>
+                  <div>
+                    <label className="font-mono text-[8px] text-[#3a3a5c] uppercase tracking-widest block mb-1.5">To date</label>
+                    <input type="date" value={auditToDate} onChange={(event)=>setAuditToDate(event.target.value)} className="input-base text-sm" />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-4">
+                  <button onClick={()=>{setAuditActorFilter("all");setAuditActionFilter("all");setAuditFromDate("");setAuditToDate("");}} className="px-3 py-2 border border-[#1a1a30] text-[#7878a0] font-mono text-[9px] uppercase tracking-widest hover:text-[#eeeef5] hover:border-[#242440] transition-all">
+                    Reset Filters
+                  </button>
+                  <button onClick={exportFilteredAudits} className="px-3 py-2 border border-[#e8c547]/20 text-[#e8c547] font-mono text-[9px] uppercase tracking-widest hover:bg-[#e8c547]/10 transition-all">
+                    Export Filtered Logs
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-[#0c0c18] border border-[#1a1a30] p-0 overflow-hidden">
+                <div className="max-h-[520px] overflow-y-auto">
+                  {filteredAudits.map((audit) => (
+                    <div key={audit._id} className="border-b border-[#1a1a30] last:border-0 px-5 py-4">
+                      <div className="flex items-center justify-between gap-3 mb-1">
+                        <p className="text-[#eeeef5] text-sm">{audit.action}</p>
+                        <span className="font-mono text-[9px] text-[#3a3a5c]">{new Date(audit.createdAt).toLocaleString()}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 font-mono text-[9px]">
+                        <span className="px-2 py-1 border border-[#1a1a30] text-[#7878a0]">actor: {audit.actor}</span>
+                        {audit.sessionId && <span className="px-2 py-1 border border-[#1a1a30] text-[#7878a0]">session: {audit.sessionId}</span>}
+                        {audit.messageId && <span className="px-2 py-1 border border-[#1a1a30] text-[#7878a0]">message: {audit.messageId}</span>}
+                      </div>
+                    </div>
+                  ))}
+                  {filteredAudits.length===0 && <p className="font-mono text-[10px] text-[#3a3a5c] py-10 text-center uppercase tracking-widest">No audit logs match these filters</p>}
                 </div>
               </div>
             </motion.div>
@@ -324,19 +626,22 @@ export default function AdminDashboard() {
                   <h3 className="font-mono text-[9px] text-[#e8c547] uppercase tracking-widest mb-4">Stats Row</h3>
                   <div className="grid grid-cols-2 gap-3">
                     {(get("home").stats||[]).map((stat:any,i:number)=>(
-                      <div key={i} className="bg-[#07070f] border border-[#1a1a30] p-3 space-y-2">
+                      <div key={i} className="bg-[#07070f] border border-[#1a1a30] p-3 space-y-2 relative">
+                        <button onClick={()=>{const s=(get("home").stats||[]).filter((_:any,idx:number)=>idx!==i);setField("home","stats",s);}} className="absolute top-2 right-2 font-mono text-[8px] text-red-400/50 hover:text-red-400 border border-red-400/10 px-2 py-1 transition-all">×</button>
                         <Field label={`Stat ${i+1} Value`} value={stat.value||""} onChange={v=>{const s=[...(get("home").stats||[])];s[i]={...s[i],value:v};setField("home","stats",s);}} placeholder="5+"/>
                         <Field label="Label" value={stat.label||""} onChange={v=>{const s=[...(get("home").stats||[])];s[i]={...s[i],label:v};setField("home","stats",s);}} placeholder="Years Experience"/>
                         <Field label="Sub" value={stat.sub||""} onChange={v=>{const s=[...(get("home").stats||[])];s[i]={...s[i],sub:v};setField("home","stats",s);}} placeholder="Across 3 disciplines"/>
                       </div>
                     ))}
                   </div>
+                  <button onClick={()=>setField("home","stats",[...(get("home").stats||[]),{value:"",label:"",sub:""}])} className="mt-3 font-mono text-[9px] text-[#e8c547] hover:underline uppercase tracking-widest">+ Add Stat</button>
                 </div>
                 <div className="bg-[#0c0c18] border border-[#1a1a30] p-5">
                   <h3 className="font-mono text-[9px] text-[#e8c547] uppercase tracking-widest mb-4">Services Section</h3>
                   <div className="space-y-3">
                     {(get("home").services||[]).map((svc:any,i:number)=>(
-                      <div key={i} className="bg-[#07070f] border border-[#1a1a30] p-4 space-y-3">
+                      <div key={i} className="bg-[#07070f] border border-[#1a1a30] p-4 space-y-3 relative">
+                        <button onClick={()=>{const s=(get("home").services||[]).filter((_:any,idx:number)=>idx!==i);setField("home","services",s);}} className="absolute top-2 right-2 font-mono text-[8px] text-red-400/50 hover:text-red-400 border border-red-400/10 px-2 py-1 transition-all">×</button>
                         <div className="grid grid-cols-2 gap-3">
                           <Field label="Title" value={svc.title||""} onChange={v=>{const s=[...(get("home").services||[])];s[i]={...s[i],title:v};setField("home","services",s);}} placeholder="Software Development"/>
                           <Field label="Tag" value={svc.tag||""} onChange={v=>{const s=[...(get("home").services||[])];s[i]={...s[i],tag:v};setField("home","services",s);}} placeholder="Dev"/>
@@ -345,12 +650,14 @@ export default function AdminDashboard() {
                       </div>
                     ))}
                   </div>
+                  <button onClick={()=>setField("home","services",[...(get("home").services||[]),{title:"",tag:"",desc:""}])} className="mt-3 font-mono text-[9px] text-[#e8c547] hover:underline uppercase tracking-widest">+ Add Service</button>
                 </div>
                 <div className="bg-[#0c0c18] border border-[#1a1a30] p-5">
                   <h3 className="font-mono text-[9px] text-[#e8c547] uppercase tracking-widest mb-4">Testimonials</h3>
                   <div className="space-y-3">
                     {(get("home").testimonials||[]).map((t:any,i:number)=>(
-                      <div key={i} className="bg-[#07070f] border border-[#1a1a30] p-4 space-y-3">
+                      <div key={i} className="bg-[#07070f] border border-[#1a1a30] p-4 space-y-3 relative">
+                        <button onClick={()=>{const s=(get("home").testimonials||[]).filter((_:any,idx:number)=>idx!==i);setField("home","testimonials",s);}} className="absolute top-2 right-2 font-mono text-[8px] text-red-400/50 hover:text-red-400 border border-red-400/10 px-2 py-1 transition-all">×</button>
                         <Field label="Quote" value={t.text||""} onChange={v=>{const s=[...(get("home").testimonials||[])];s[i]={...s[i],text:v};setField("home","testimonials",s);}} multiline placeholder="What they said..."/>
                         <div className="grid grid-cols-2 gap-3">
                           <Field label="Author Name" value={t.author||""} onChange={v=>{const s=[...(get("home").testimonials||[])];s[i]={...s[i],author:v};setField("home","testimonials",s);}} placeholder="John Doe"/>
@@ -433,7 +740,8 @@ export default function AdminDashboard() {
                 <div className="bg-[#0c0c18] border border-[#1a1a30] p-5">
                   <h3 className="font-mono text-[9px] text-[#e8c547] uppercase tracking-widest mb-4">Skill Categories</h3>
                   {(get("skills").categories||[]).map((cat:any,ci:number)=>(
-                    <div key={ci} className="bg-[#07070f] border border-[#1a1a30] p-4 mb-3">
+                    <div key={ci} className="bg-[#07070f] border border-[#1a1a30] p-4 mb-3 relative">
+                      <button onClick={()=>{const c=(get("skills").categories||[]).filter((_:any,idx:number)=>idx!==ci);setField("skills","categories",c);}} className="absolute top-2 right-2 font-mono text-[8px] text-red-400/50 hover:text-red-400 border border-red-400/10 px-2 py-1 transition-all">×</button>
                       <div className="grid grid-cols-2 gap-3 mb-3">
                         <Field label="Category Name" value={cat.label||""} onChange={v=>{const c=[...(get("skills").categories||[])];c[ci]={...c[ci],label:v};setField("skills","categories",c);}} placeholder="Technical Skills"/>
                         <Field label="Color (hex)" value={cat.color||""} onChange={v=>{const c=[...(get("skills").categories||[])];c[ci]={...c[ci],color:v};setField("skills","categories",c);}} placeholder="#a78bfa"/>
@@ -475,7 +783,8 @@ export default function AdminDashboard() {
                 <div className="bg-[#0c0c18] border border-[#1a1a30] p-5">
                   <h3 className="font-mono text-[9px] text-[#e8c547] uppercase tracking-widest mb-4">Frameworks</h3>
                   {(get("thinking")?.frameworks||[{code:"FW-001",title:"The Problem Stack",desc:"",steps:[""]},{code:"FW-002",title:"Opportunity Scoring",desc:"",steps:[""]},{code:"FW-003",title:"The Narrative Arc",desc:"",steps:[""]},{code:"FW-004",title:"Feedback Loops",desc:"",steps:[""]}]).map((fw:any,i:number)=>(
-                    <div key={i} className="bg-[#07070f] border border-[#1a1a30] p-4 mb-3 space-y-3">
+                    <div key={i} className="bg-[#07070f] border border-[#1a1a30] p-4 mb-3 space-y-3 relative">
+                      <button onClick={()=>{const f=(get("thinking")?.frameworks||[]).filter((_:any,idx:number)=>idx!==i);setField("thinking","frameworks",f);}} className="absolute top-2 right-2 font-mono text-[8px] text-red-400/50 hover:text-red-400 border border-red-400/10 px-2 py-1 transition-all">×</button>
                       <div className="grid grid-cols-2 gap-3">
                         <Field label="Code" value={fw.code||""} onChange={v=>{const f=[...(get("thinking")?.frameworks||[])];f[i]={...f[i],code:v};setField("thinking","frameworks",f);}} placeholder="FW-001"/>
                         <Field label="Title" value={fw.title||""} onChange={v=>{const f=[...(get("thinking")?.frameworks||[])];f[i]={...f[i],title:v};setField("thinking","frameworks",f);}} placeholder="The Problem Stack"/>
@@ -485,11 +794,13 @@ export default function AdminDashboard() {
                       <input value={(fw.steps||[]).join(", ")} onChange={e=>{const f=[...(get("thinking")?.frameworks||[])];f[i]={...f[i],steps:e.target.value.split(",").map((s:string)=>s.trim())};setField("thinking","frameworks",f);}} className="input-base text-sm" placeholder="Step 1, Step 2, Step 3..."/></div>
                     </div>
                   ))}
+                  <button onClick={()=>setField("thinking","frameworks",[...(get("thinking")?.frameworks||[]),{code:"",title:"",desc:"",steps:[""]}])} className="font-mono text-[9px] text-[#e8c547] hover:underline uppercase tracking-widest">+ Add Framework</button>
                 </div>
                 <div className="bg-[#0c0c18] border border-[#1a1a30] p-5">
                   <h3 className="font-mono text-[9px] text-[#e8c547] uppercase tracking-widest mb-4">Decision Logic Q&A</h3>
                   {(get("thinking")?.decisions||[{q:"Build vs. Buy?",a:""},{q:"Ship fast vs. Ship right?",a:""},{q:"Data vs. Instinct?",a:""},{q:"Feature vs. Outcome?",a:""}]).map((d:any,i:number)=>(
-                    <div key={i} className="bg-[#07070f] border border-[#1a1a30] p-4 mb-3 space-y-3">
+                    <div key={i} className="bg-[#07070f] border border-[#1a1a30] p-4 mb-3 space-y-3 relative">
+                      <button onClick={()=>{const ds=(get("thinking")?.decisions||[]).filter((_:any,idx:number)=>idx!==i);setField("thinking","decisions",ds);}} className="absolute top-2 right-2 font-mono text-[8px] text-red-400/50 hover:text-red-400 border border-red-400/10 px-2 py-1 transition-all">×</button>
                       <Field label="Question" value={d.q||""} onChange={v=>{const ds=[...(get("thinking")?.decisions||[])];ds[i]={...ds[i],q:v};setField("thinking","decisions",ds);}} placeholder="Build vs. Buy?"/>
                       <Field label="Answer" value={d.a||""} onChange={v=>{const ds=[...(get("thinking")?.decisions||[])];ds[i]={...ds[i],a:v};setField("thinking","decisions",ds);}} multiline placeholder="Your answer..."/>
                     </div>
@@ -653,6 +964,27 @@ export default function AdminDashboard() {
                   <code className="block bg-[#07070f] border border-[#1a1a30] p-3 font-mono text-[10px] text-[#e8c547]">
                     node -e &quot;const b=require(&apos;bcryptjs&apos;); console.log(b.hashSync(&apos;NewPassword&apos;,10))&quot;
                   </code>
+                </div>
+                <div className="bg-[#0c0c18] border border-[#1a1a30] p-5">
+                  <h3 className="font-mono text-[9px] text-[#e8c547] uppercase tracking-widest mb-3">Chat Data Controls</h3>
+                  <div className="flex flex-wrap items-end gap-3 mb-4">
+                    <div>
+                      <label className="font-mono text-[9px] text-[#3a3a5c] uppercase tracking-widest block mb-1.5">Retention (days)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={retentionDays}
+                        onChange={(event) => setRetentionDays(Number(event.target.value || 1))}
+                        className="input-base text-sm w-36"
+                      />
+                    </div>
+                    <button onClick={applyRetention} disabled={retentionLoading} className="px-4 py-2 border border-[#e8c547]/20 text-[#e8c547] font-mono text-[9px] uppercase tracking-widest hover:bg-[#e8c547]/10 disabled:opacity-60 transition-all">
+                      {retentionLoading ? "Applying..." : "Apply Retention"}
+                    </button>
+                  </div>
+                  <button onClick={exportChats} className="px-4 py-2 border border-[#1a1a30] text-[#7878a0] font-mono text-[9px] uppercase tracking-widest hover:text-[#eeeef5] hover:border-[#242440] transition-all">
+                    Export All Chat Data (JSON)
+                  </button>
                 </div>
               </div>
               <SaveBar saving={saving} saved={saved} onSave={()=>saveSection("settings",get("settings"))}/>

@@ -1,6 +1,4 @@
-"use client";
 import ScrollReveal from "@/components/ui/ScrollReveal";
-import { motion } from "framer-motion";
 
 const impacts = [
   { num: "01", color: "#e8c547", metric: "240+", metricLabel: "Lives Changed", problem: "Youth unemployment in Lagos", action: "Co-founded a 12-week digital skills bootcamp training young people in product management and digital marketing fundamentals.", result: "240+ graduates placed in tech roles across Lagos" },
@@ -41,9 +39,7 @@ export default function SocialImpactPage() {
             <ScrollReveal key={i} delay={0.05}>
               <div className={`grid lg:grid-cols-2 gap-8 md:gap-12 items-center ${i % 2 === 1 ? "lg:[grid-template-areas:'b_a']" : ""}`}>
                 {/* Metric card */}
-                <motion.div
-                  initial={{ opacity:0, scale:0.95 }} whileInView={{ opacity:1, scale:1 }}
-                  viewport={{ once:true }} transition={{ duration:0.6 }}
+                <div
                   className={`p-8 md:p-12 border rounded-sm relative overflow-hidden ${i % 2 === 1 ? "lg:[grid-area:b]" : ""}`}
                   style={{ borderColor: item.color + "20", background: item.color + "05" }}
                 >
@@ -53,7 +49,7 @@ export default function SocialImpactPage() {
                     <div className="font-display font-light leading-none mb-2" style={{ fontSize: "clamp(4rem,10vw,6rem)", color: item.color }}>{item.metric}</div>
                     <div className="font-mono text-sm text-[#7878a0] uppercase tracking-widest">{item.metricLabel}</div>
                   </div>
-                </motion.div>
+                </div>
 
                 {/* Story */}
                 <ScrollReveal delay={0.15} direction={i % 2 === 0 ? "left" : "right"}>

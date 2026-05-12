@@ -1,34 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
-import { Message } from "@/models/index";
 import { sendNotificationEmail } from "@/lib/mailer";
-import { Schema, model, models } from "mongoose";
+import { ChatAuditLog, ChatSession, Message } from "@/models/index";
 
-// ── Rate limit store (in-memory + DB backed) ──
-const ChatSessionSchema = new Schema({
-  sessionId: { type: String, required: true, unique: true },
-  ip: String,
-  fingerprint: String,
-  name: String,
-  email: String,
-  messageCount: { type: Number, default: 0 },
-  lastMessage: Date,
-  completed: { type: Boolean, default: false },
-  blocked: { type: Boolean, default: false },
-  blockedReason: String,
-  createdAt: { type: Date, default: Date.now },
-  expiresAt: { type: Date, default: () => new Date(Date.now() + 24 * 60 * 60 * 1000) }, // 24h
-});
-
-const ChatSession = models.ChatSession || model("ChatSession", ChatSessionSchema);
-
-// In-memory rate limit (per IP, resets on server restart)
 const ipAttempts = new Map<string, { count: number; firstAttempt: number; lastAttempt: number }>();
 
-const MAX_MESSAGES_PER_SESSION = 5;
+const MAX_MESSAGES_PER_SESSION = 50;
+const MAX_UNANSWERED_MESSAGES = 3;
 const MAX_SESSIONS_PER_IP_PER_HOUR = 3;
-const MIN_TIME_BETWEEN_MESSAGES_MS = 2000; // 2 seconds min between messages
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const MIN_TIME_BETWEEN_MESSAGES_MS = 1500;
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function getClientIP(req: NextRequest): string {
   return (
@@ -44,77 +26,102 @@ function generateSessionId(): string {
 }
 
 function isSpam(text: string): boolean {
-  // Check for spam patterns
   const spamPatterns = [
-    /(.)\1{10,}/,                    // repeated characters: aaaaaaaaaa
-    /(https?:\/\/[^\s]+\s*){3,}/i,  // 3+ URLs
+    /(.)\1{10,}/,
+    /(https?:\/\/[^\s]+\s*){3,}/i,
     /\b(buy|sell|cheap|free|click here|subscribe|winner|congratulations)\b/i,
-    /[A-Z]{20,}/,                    // excessive caps
+    /[A-Z]{20,}/,
   ];
-  return spamPatterns.some(p => p.test(text));
+  return spamPatterns.some((pattern) => pattern.test(text));
 }
 
-function containsProfanity(text: string): boolean {
-  // Basic list — extend as needed
-  const blocked = ["spam", "hack", "test test test"];
-  const lower = text.toLowerCase();
-  return blocked.some(w => lower.includes(w) && lower.length < 20);
+function sanitizeText(value: unknown) {
+  return String(value ?? "").trim();
 }
 
-// GET - fetch session state (for browser refresh persistence)
+function normalizeEmail(value: unknown) {
+  return sanitizeText(value).toLowerCase();
+}
+
+async function loadSession(sessionId: string): Promise<any | null> {
+  return ChatSession.findOne({ sessionId }).lean<any>();
+}
+
 export async function GET(req: NextRequest) {
   const sessionId = new URL(req.url).searchParams.get("sessionId");
-  if (!sessionId) return NextResponse.json({ session: null });
+  if (!sessionId) return NextResponse.json({ session: null, messages: [] });
+
   try {
     await connectDB();
-    const session = await ChatSession.findOne({ sessionId, blocked: false });
-    if (!session) return NextResponse.json({ session: null });
-    // Check if expired
+    const session = await loadSession(sessionId);
+    if (!session) return NextResponse.json({ session: null, messages: [] });
+
     if (new Date(session.expiresAt) < new Date()) {
-      return NextResponse.json({ session: null });
+      return NextResponse.json({ session: null, messages: [] });
     }
+
+    const messages = await Message.find({ sessionId }).sort({ createdAt: 1 }).lean<any[]>();
+
+    void Message.updateMany(
+      { sessionId, sender: "admin", readByUser: false },
+      { $set: { readByUser: true } }
+    ).catch(() => {});
+
     return NextResponse.json({
       session: {
         sessionId: session.sessionId,
-        name: session.name,
-        email: session.email,
-        messageCount: session.messageCount,
-        completed: session.completed,
-      }
+        name: session.name || "",
+        email: session.email || "",
+        messageCount: session.messageCount || 0,
+        blocked: !!session.blocked,
+        blockedReason: session.blockedReason || "",
+        restricted: !!session.restricted,
+        restrictedReason: session.restrictedReason || "",
+      },
+      messages: messages.map((message) => ({
+        id: String(message._id),
+        sender: message.sender,
+        text: message.deletedForUser ? "This message was deleted." : message.message,
+        createdAt: message.createdAt,
+        readByAdmin: !!message.readByAdmin,
+        readByUser: !!message.readByUser,
+        deletedForUser: !!message.deletedForUser,
+      })),
     });
   } catch {
-    return NextResponse.json({ session: null });
+    return NextResponse.json({ session: null, messages: [] });
   }
 }
 
-// POST - create session or send message
 export async function POST(req: NextRequest) {
   const ip = getClientIP(req);
   const now = Date.now();
 
   try {
     const body = await req.json();
-    const { action, sessionId, name, email, message, fingerprint, honeypot, timingMs } = body;
+    const action = sanitizeText(body.action);
+    const sessionId = sanitizeText(body.sessionId);
+    const name = sanitizeText(body.name);
+    const email = normalizeEmail(body.email);
+    const message = sanitizeText(body.message);
+    const fingerprint = sanitizeText(body.fingerprint);
+    const visitorId = sanitizeText(body.visitorId);
+    const honeypot = sanitizeText(body.honeypot);
+    const timingMs = Number(body.timingMs ?? 0);
 
-    // ── HONEYPOT CHECK (bot detection) ──
-    // If honeypot field is filled, it's a bot
     if (honeypot) {
       return NextResponse.json({ error: "Invalid request." }, { status: 400 });
     }
 
-    // ── TIMING CHECK (too fast = bot) ──
-    if (timingMs !== undefined && timingMs < 500) {
+    if (timingMs && timingMs < 300) {
       return NextResponse.json({ error: "Too fast. Please slow down." }, { status: 429 });
     }
 
     await connectDB();
 
-    // ── CREATE SESSION ──
     if (action === "create_session") {
-      // Check IP rate limit
       const ipData = ipAttempts.get(ip);
       if (ipData) {
-        // Reset if window expired
         if (now - ipData.firstAttempt > RATE_LIMIT_WINDOW_MS) {
           ipAttempts.set(ip, { count: 1, firstAttempt: now, lastAttempt: now });
         } else if (ipData.count >= MAX_SESSIONS_PER_IP_PER_HOUR) {
@@ -130,66 +137,145 @@ export async function POST(req: NextRequest) {
         ipAttempts.set(ip, { count: 1, firstAttempt: now, lastAttempt: now });
       }
 
-      // Check if IP already has active incomplete session
       const existingSession = await ChatSession.findOne({
-        ip,
-        completed: false,
-        blocked: false,
+        $or: [
+          ...(fingerprint ? [{ fingerprint }] : []),
+          ...(visitorId ? [{ visitorId }] : []),
+          { ip },
+        ],
         expiresAt: { $gt: new Date() },
-      });
+      }).sort({ updatedAt: -1, createdAt: -1 }).lean<any>();
 
       if (existingSession) {
-        // Return existing session so they continue where they left off
         return NextResponse.json({
           sessionId: existingSession.sessionId,
           resumed: true,
-          name: existingSession.name,
-          email: existingSession.email,
-          messageCount: existingSession.messageCount,
-          completed: existingSession.completed,
+          name: existingSession.name || "",
+          email: existingSession.email || "",
+          messageCount: existingSession.messageCount || 0,
+          blocked: !!existingSession.blocked,
+          restricted: !!existingSession.restricted,
         });
       }
 
-      // Create new session
       const newSessionId = generateSessionId();
       await ChatSession.create({
         sessionId: newSessionId,
         ip,
-        fingerprint: fingerprint || "",
+        fingerprint,
+        visitorId,
         messageCount: 0,
-        completed: false,
-        blocked: false,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + SESSION_TTL_MS),
       });
 
       return NextResponse.json({ sessionId: newSessionId, resumed: false });
     }
 
-    // ── SEND MESSAGE ──
+    if (action === "resume_by_email") {
+      if (!email) {
+        return NextResponse.json({ error: "Email is required." }, { status: 400 });
+      }
+
+      const matchingSession = await ChatSession.findOne({
+        email,
+        expiresAt: { $gt: new Date() },
+      }).sort({ updatedAt: -1, createdAt: -1 }).lean<any>();
+
+      if (!matchingSession) {
+        return NextResponse.json({ resumed: false });
+      }
+
+      return NextResponse.json({
+        resumed: true,
+        sessionId: matchingSession.sessionId,
+        name: matchingSession.name || "",
+        email: matchingSession.email || email,
+        blocked: !!matchingSession.blocked,
+        restricted: !!matchingSession.restricted,
+      });
+    }
+
+    if (!sessionId) {
+      return NextResponse.json({ error: "Session is required." }, { status: 400 });
+    }
+
+    const session = await ChatSession.findOne({ sessionId });
+    if (!session) {
+      return NextResponse.json({ error: "Invalid session. Please refresh and try again." }, { status: 400 });
+    }
+
+    if (new Date(session.expiresAt) < new Date()) {
+      return NextResponse.json({ error: "Session expired. Please refresh the page." }, { status: 400 });
+    }
+
+    if (session.blocked) {
+      return NextResponse.json({
+        error: session.blockedReason || "Your chat access has been blocked.",
+        blocked: true,
+      }, { status: 403 });
+    }
+
+    if (action === "update_session") {
+      const updates: Record<string, unknown> = {
+        expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+      };
+      if (name) updates.name = name;
+      if (email) updates.email = email;
+      if (visitorId) updates.visitorId = visitorId;
+      if (fingerprint) updates.fingerprint = fingerprint;
+      await ChatSession.findOneAndUpdate({ sessionId }, { $set: updates });
+      return NextResponse.json({ success: true });
+    }
+
     if (action === "send_message") {
-      if (!sessionId || !message) {
-        return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
-      }
-
-      // Fetch session
-      const session = await ChatSession.findOne({ sessionId });
-      if (!session) {
-        return NextResponse.json({ error: "Invalid session. Please refresh and try again." }, { status: 400 });
-      }
-
-      // Check if blocked
-      if (session.blocked) {
+      if (session.restricted) {
         return NextResponse.json({
-          error: `Your session has been blocked: ${session.blockedReason || "Suspicious activity detected."}`,
-          blocked: true,
+          error: session.restrictedReason || "This conversation is currently restricted.",
+          restricted: true,
         }, { status: 403 });
       }
 
-      // Check if expired
-      if (new Date(session.expiresAt) < new Date()) {
-        return NextResponse.json({ error: "Session expired. Please refresh the page." }, { status: 400 });
+      if (!message) {
+        return NextResponse.json({ error: "Message is required." }, { status: 400 });
       }
 
-      // Check message rate (too fast between messages)
+      if (!session.name || !session.email) {
+        return NextResponse.json({ error: "Please provide your name and email first." }, { status: 400 });
+      }
+
+      const unansweredCount = await Message.countDocuments({
+        sessionId,
+        sender: "user",
+        ...(session.lastAdminReplyAt
+          ? { createdAt: { $gt: new Date(session.lastAdminReplyAt) } }
+          : {}),
+      });
+
+      if (unansweredCount >= MAX_UNANSWERED_MESSAGES) {
+        const patienceMessage = "Please exercise patience. Temidayo will reply as soon as possible.";
+        await ChatSession.findOneAndUpdate(
+          { sessionId },
+          {
+            $set: {
+              restricted: true,
+              restrictedReason: patienceMessage,
+              outstandingUserMessages: unansweredCount,
+            },
+          }
+        );
+        await ChatAuditLog.create({
+          action: "auto_restrict_unanswered_limit",
+          actor: "system",
+          sessionId,
+          details: { unansweredCount, limit: MAX_UNANSWERED_MESSAGES },
+        });
+        return NextResponse.json({
+          error: patienceMessage,
+          restricted: true,
+        }, { status: 403 });
+      }
+
       if (session.lastMessage) {
         const timeSinceLast = now - new Date(session.lastMessage).getTime();
         if (timeSinceLast < MIN_TIME_BETWEEN_MESSAGES_MS) {
@@ -197,57 +283,106 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Check message count limit
       if (session.messageCount >= MAX_MESSAGES_PER_SESSION) {
         return NextResponse.json({
-          error: "Message limit reached for this session.",
+          error: "Message limit reached for this conversation.",
           limitReached: true,
         }, { status: 429 });
       }
 
-      // Spam check
-      if (isSpam(message)) {
-        await ChatSession.findByIdAndUpdate(session._id, { blocked: true, blockedReason: "Spam content detected" });
-        return NextResponse.json({ error: "Your message was flagged as spam.", blocked: true }, { status: 400 });
-      }
-
-      // Length check
-      if (message.trim().length < 2) {
+      if (message.length < 2) {
         return NextResponse.json({ error: "Message too short." }, { status: 400 });
       }
+
       if (message.length > 2000) {
         return NextResponse.json({ error: "Message too long (max 2000 characters)." }, { status: 400 });
       }
 
-      // Update session with name/email if provided
-      const updates: any = {
-        messageCount: session.messageCount + 1,
-        lastMessage: new Date(),
-      };
-      if (name) updates.name = name;
-      if (email) updates.email = email;
-
-      // Mark as completed when final message sent
-      if (session.name && session.email && message) {
-        updates.completed = true;
+      if (isSpam(message)) {
+        await ChatSession.findOneAndUpdate(
+          { sessionId },
+          { $set: { blocked: true, blockedReason: "Spam content detected" } }
+        );
+        return NextResponse.json({ error: "Your message was flagged as spam.", blocked: true }, { status: 400 });
       }
 
-      await ChatSession.findByIdAndUpdate(session._id, updates);
+      const createdMessage = await Message.create({
+        sessionId,
+        name: session.name,
+        email: session.email,
+        sender: "user",
+        message,
+        read: false,
+        readByAdmin: false,
+        readByUser: true,
+      });
 
-      // Save message to DB only when we have full details
-      if (session.name && session.email) {
-        const finalName = name || session.name;
-        const finalEmail = email || session.email;
-        await Message.create({ name: finalName, email: finalEmail, message });
-        sendNotificationEmail({ name: finalName, email: finalEmail, message }).catch(console.error);
-      }
+      await ChatSession.findOneAndUpdate(
+        { sessionId },
+        {
+          $set: {
+            name: name || session.name,
+            email: email || session.email,
+            visitorId: visitorId || session.visitorId,
+            fingerprint: fingerprint || session.fingerprint,
+            lastMessage: new Date(),
+            expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+            outstandingUserMessages: unansweredCount + 1,
+          },
+          $inc: { messageCount: 1 },
+        }
+      );
 
-      return NextResponse.json({ success: true, messageCount: session.messageCount + 1 });
+      await sendNotificationEmail({
+        name: session.name,
+        email: session.email,
+        message,
+      }).catch(() => {});
+
+      return NextResponse.json({
+        success: true,
+        message: {
+          id: String(createdMessage._id),
+          sender: "user",
+          text: createdMessage.message,
+          createdAt: createdMessage.createdAt,
+        },
+      });
     }
 
-    return NextResponse.json({ error: "Invalid action." }, { status: 400 });
-  } catch (err) {
-    console.error("Chat API error:", err);
-    return NextResponse.json({ error: "Server error. Please try again." }, { status: 500 });
+    if (action === "delete_message") {
+      const messageId = sanitizeText(body.messageId);
+      if (!messageId) {
+        return NextResponse.json({ error: "Message id is required." }, { status: 400 });
+      }
+
+      const targetMessage = await Message.findOne({
+        _id: messageId,
+        sessionId,
+        sender: "user",
+      });
+
+      if (!targetMessage) {
+        return NextResponse.json({ error: "Message not found." }, { status: 404 });
+      }
+
+      targetMessage.deletedByUserAt = new Date();
+      targetMessage.deletedForUser = true;
+      targetMessage.deleteReason = "Deleted by sender";
+      await targetMessage.save();
+      await ChatAuditLog.create({
+        action: "user_deleted_message",
+        actor: "user",
+        sessionId,
+        messageId,
+        details: { email: session.email || "" },
+      });
+
+      return NextResponse.json({ success: true });
+    }
+
+    return NextResponse.json({ error: "Unsupported action." }, { status: 400 });
+  } catch {
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
 }

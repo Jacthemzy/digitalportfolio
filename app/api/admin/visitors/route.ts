@@ -6,8 +6,8 @@ import { isAdminAuthenticated } from "@/lib/auth";
 export async function GET(req: NextRequest) {
   if (!isAdminAuthenticated(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   await connectDB();
-  const visitors = await Visitor.find().sort({ lastSeen: -1 }).limit(200);
-  const bans = await Ban.find({ isActive: true });
+  const visitors = await Visitor.find().sort({ lastSeen: -1 }).limit(100).lean();
+  const bans = await Ban.find({ isActive: true }).lean();
   return NextResponse.json({ visitors, bans });
 }
 

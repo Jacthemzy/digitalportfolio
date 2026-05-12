@@ -6,7 +6,7 @@ import { isAdminAuthenticated } from "@/lib/auth";
 export async function GET(req: NextRequest) {
   if (!isAdminAuthenticated(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   await connectDB();
-  const all = await Analytics.find().sort({ createdAt: -1 }).limit(500);
+  const all = await Analytics.find().sort({ createdAt: -1 }).limit(500).lean();
 
   const pageViews: Record<string, number> = {};
   const pageTime: Record<string, number> = {};
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
     .sort((a, b) => b.views - a.views);
 
   const week = new Date(); week.setDate(week.getDate() - 7);
-  const recent = await Analytics.find({ createdAt: { $gte: week } });
+  const recent = await Analytics.find({ createdAt: { $gte: week } }).lean();
   const dailyCounts: Record<string, number> = {};
   recent.forEach((a) => {
     const day = new Date(a.createdAt).toLocaleDateString("en-US", { weekday: "short" });
