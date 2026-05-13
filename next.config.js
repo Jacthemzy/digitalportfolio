@@ -11,9 +11,6 @@ const nextConfig = {
   experimental: {
     optimizePackageImports: ["framer-motion", "recharts"],
   },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   typescript: {
     ignoreBuildErrors: true,
   },

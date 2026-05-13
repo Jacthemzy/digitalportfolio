@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
@@ -78,7 +78,7 @@ function Field({ label, value, onChange, multiline = false, placeholder = "", ty
   );
 }
 
-export default function AdminProjectEditor() {
+function AdminProjectEditorInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editId = searchParams.get("id");
@@ -490,5 +490,17 @@ export default function AdminProjectEditor() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function AdminProjectEditor() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-[#04040a]">
+        <div className="w-8 h-8 border-2 border-[#e8c547]/30 border-t-[#e8c547] rounded-full animate-spin" />
+      </div>
+    }>
+      <AdminProjectEditorInner />
+    </Suspense>
   );
 }
